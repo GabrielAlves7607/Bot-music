@@ -1,4 +1,6 @@
 from discord.ext import commands
+import nacl.utils
+
 
 def setup_commands(bot):
     @bot.command(name="play")
