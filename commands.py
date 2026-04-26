@@ -14,8 +14,22 @@ YDL_OPTIONS = {
     'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
 }
 FFMPEG_OPTIONS = {
-    'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5',
-    'options': '-vn'
+    # Antes de abrir o link: focado em estabilidade e velocidade de conexão
+    'before_options': (
+        '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 '
+        '-nostdin -ss 0'
+    ),
+    # Durante o processamento: focado em qualidade e baixa latência
+    'options': (
+        '-vn -loglevel panic '
+        '-b:a 128k '                # Força bitrate de 128kbps (alta qualidade para voz)
+        '-ar 48000 '                # Sample rate nativo do Discord (48kHz)
+        '-ac 2 '                    # Estéreo
+        '-threads 0 '               # Usa todos os núcleos da CPU para processar
+        '-analyzeduration 0 '       # Início instantâneo
+        '-probesize 32 '            # Investigação mínima do arquivo
+        '-af "volume=1.0"'          # Filtro de áudio (volume normalizado)
+    )
 }
 
 def setup_commands(bot):
@@ -64,6 +78,15 @@ def setup_commands(bot):
                 except Exception as e:
                     await ctx.send(f"Erro ao tentar processar a música: {e}")
 
+    @bot.command(name="skip")
+    async def skip(ctx):
+        """Pular musicas"""
+        if ctx.voice_client.is_playing() and ctx.voice_client:
+            ctx.voice_client.stop()
+            await ctx.send("Musica pulada! ⏭️ ")
+        else:
+            await ctx.send("Não há nada tocando no momento.")
+
     @bot.command(name="stop")
     async def stop(ctx):
         """Para a música e desconecta."""
@@ -100,6 +123,11 @@ def setup_commands(bot):
             name="▶️ `!play [música/link]`",
             value="Busca e toca uma música do YouTube.",
             inline=False
+        )
+        embed.add_field(
+            name="⏭️ `!skip`",
+            value="Pular para a próxima música.",
+            inline=True
         )
         embed.add_field(
             name="⏸️ `!pause`",
