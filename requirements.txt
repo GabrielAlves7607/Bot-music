@@ -2,3 +2,6 @@ discord.py[voice]
 requests
 python-dotenv
 PyNaCl
+discord.py[voice]>=2.7.0
+davey
+yt-dlp
