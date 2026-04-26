@@ -13,10 +13,18 @@ if not TOKEN:
     raise ValueError("Erro: Token não encontrado no arquivo .env")
 
 
-# Configuração do Bot
+# Configuração do Bot com Otimização de RAM
 intents = discord.Intents.default()
 intents.message_content = True
-bot = commands.Bot(command_prefix='!', intents=intents, help_command=None)
+intents.members = False
+intents.presences = False
+
+bot = commands.Bot(
+    command_prefix='!', 
+    intents=intents, 
+    help_command=None,
+    member_cache_flags=discord.MemberCacheFlags.none() # Não guarda membros na RAM
+)
 
 
 # Registra os comandos

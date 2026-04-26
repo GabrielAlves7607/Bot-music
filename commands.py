@@ -2,6 +2,9 @@ import discord
 from discord.ext import commands
 import yt_dlp
 import asyncio
+import psutil
+import os
+import gc
 
 listamsc = []
 
@@ -35,44 +38,40 @@ FFMPEG_OPTIONS = {
 def setup_commands(bot):
     @bot.command(name="play")
     async def play(ctx, *, search: str):
-        def tocar_proxima(error): # Adicionamos o 'error' aqui
+        def tocar_proxima(error):
             if len(listamsc) > 0:
-                # 1. Pega a URL que estava guardada na fila
-                proxima_url = listamsc.pop(0) 
+                # 1. Pega os dados da próxima música
+                proxima_musica = listamsc.pop(0) 
+                proxima_url = proxima_musica['url']
                 
-                # 2. Cria o source SEM o await e usando a proxima_url
+                # 2. Cria o source
                 source = discord.FFmpegPCMAudio(proxima_url, **FFMPEG_OPTIONS)
                 
-                # 3. Toca e avisa que, quando acabar, chama o fiscal de novo
+                # 3. Toca a próxima
                 ctx.voice_client.play(source, after=tocar_proxima)
-            else:
-                # Se a lista estiver vazia, o fiscal vai dormir
-                pass
+                gc.collect() # Limpa resíduos da música anterior da RAM
 
         """Toca uma música baseada no link ou termo de busca."""
         if not ctx.author.voice:
             return await ctx.send("Você precisa estar em um canal de voz!")
 
-        # Conecta ao canal se não estiver conectado
         if not ctx.voice_client:
             await ctx.author.voice.channel.connect()
 
         async with ctx.typing():
             with yt_dlp.YoutubeDL(YDL_OPTIONS) as ydl:
                 try:
-                    # 1. Busca os dados da música
                     info = ydl.extract_info(f"ytsearch:{search}", download=False)['entries'][0]
                     url = info['url']
                     title = info['title']
                     
                     if not ctx.voice_client.is_playing():
-                        # A caixa está livre! Criamos o áudio e damos o play.
                         source = discord.FFmpegPCMAudio(url, **FFMPEG_OPTIONS)
                         ctx.voice_client.play(source, after=tocar_proxima)
                         await ctx.send(f"🎵 Tocando agora: **{title}**")
                     else:
-                        # A caixa está ocupada! APENAS guardamos a URL na lista.
-                        listamsc.append(url)
+                        # Salvamos o título e a URL
+                        listamsc.append({'title': title, 'url': url})
                         await ctx.send(f"🎵 Adicionada à fila: **{title}** (Posição: {len(listamsc)})")
 
                 except Exception as e:
@@ -110,6 +109,53 @@ def setup_commands(bot):
             ctx.voice_client.resume()
             await ctx.send("Música retomada! ▶️")
 
+    @bot.command(name="fila")
+    async def fila(ctx):
+        """Lista as músicas na fila."""
+        if len(listamsc) == 0:
+            return await ctx.send("A fila está vazia no momento! 📭")
+
+        embed = discord.Embed(
+            title="📜 Fila de Músicas",
+            description=f"Existem **{len(listamsc)}** músicas na fila.",
+            color=discord.Color.green()
+        )
+
+        lista_texto = ""
+        for i, musica in enumerate(listamsc[:10], 1):
+            lista_texto += f"**{i}.** {musica['title']}\n"
+
+        if len(listamsc) > 10:
+            lista_texto += f"\n*E mais {len(listamsc) - 10} músicas...*"
+
+        embed.add_field(name="Próximas músicas:", value=lista_texto, inline=False)
+        await ctx.send(embed=embed)
+
+    @bot.command(name="status")
+    async def status(ctx):
+        """Mostra o uso atual de RAM do bot."""
+        process = psutil.Process(os.getpid())
+        memoria_mb = process.memory_info().rss / 1024 / 1024
+        
+        embed = discord.Embed(
+            title="📊 Status do Sistema",
+            color=discord.Color.gold()
+        )
+        embed.add_field(
+            name="Uso de Memória RAM",
+            value=f"`{memoria_mb:.2f} MB` / 100 MB",
+            inline=False
+        )
+        
+        # Barra visual simples
+        barra_cheia = min(int((memoria_mb / 100) * 10), 10)
+        barra_vazia = 10 - barra_cheia
+        grafico = "🟦" * barra_cheia + "⬜" * barra_vazia
+        
+        embed.add_field(name="Carga", value=grafico, inline=False)
+        
+        await ctx.send(embed=embed)
+
     @bot.command(name="help")
     async def help_command(ctx):
         """Exibe a lista de comandos de forma elegante."""
@@ -118,7 +164,16 @@ def setup_commands(bot):
             description="Aqui estão os comandos disponíveis para você aproveitar a música!",
             color=discord.Color.blue()
         )
-
+        embed.add_field(
+            name="📜 `!fila`",
+            value="Mostra a lista de músicas aguardando.",
+            inline=False
+        )
+        embed.add_field(
+            name="📊 `!status`",
+            value="Mostra o uso de RAM do bot.",
+            inline=False
+        )
         embed.add_field(
             name="▶️ `!play [música/link]`",
             value="Busca e toca uma música do YouTube.",
@@ -127,23 +182,24 @@ def setup_commands(bot):
         embed.add_field(
             name="⏭️ `!skip`",
             value="Pular para a próxima música.",
-            inline=True
+            inline=False
         )
         embed.add_field(
             name="⏸️ `!pause`",
             value="Pausa a reprodução atual.",
-            inline=True
+            inline=False
         )
         embed.add_field(
             name="⏯️ `!resume`",
             value="Retoma a música pausada.",
-            inline=True
+            inline=False
         )
         embed.add_field(
             name="⏹️ `!stop`",
             value="Para a música e desconecta o bot.",
             inline=False
         )
+
         
         embed.set_footer(text="Aproveite a sua música! 🎧", icon_url=ctx.bot.user.avatar.url if ctx.bot.user.avatar else None)
         embed.set_thumbnail(url=ctx.bot.user.avatar.url if ctx.bot.user.avatar else None)
