@@ -45,7 +45,7 @@ def setup_commands(bot):
                 proxima_url = proxima_musica['url']
                 
                 # 2. Cria o source
-                source = discord.FFmpegPCMAudio(proxima_url, **FFMPEG_OPTIONS)
+                source = discord.FFmpegOpusAudio(proxima_url, **FFMPEG_OPTIONS)
                 
                 # 3. Toca a próxima
                 ctx.voice_client.play(source, after=tocar_proxima)
@@ -61,12 +61,19 @@ def setup_commands(bot):
         async with ctx.typing():
             with yt_dlp.YoutubeDL(YDL_OPTIONS) as ydl:
                 try:
-                    info = ydl.extract_info(f"ytsearch:{search}", download=False)['entries'][0]
+                    # Busca a música
+                    resultados = ydl.extract_info(f"ytsearch:{search}", download=False)
+                    
+                    # VERIFICAÇÃO: Se não houver entradas, avisa o usuário e para aqui
+                    if 'entries' not in resultados or not resultados['entries']:
+                        return await ctx.send(f"❌ Não encontrei nenhum resultado para: `{search}`")
+
+                    info = resultados['entries'][0]
                     url = info['url']
                     title = info['title']
                     
                     if not ctx.voice_client.is_playing():
-                        source = discord.FFmpegPCMAudio(url, **FFMPEG_OPTIONS)
+                        source = discord.FFmpegOpusAudio(url, **FFMPEG_OPTIONS)
                         ctx.voice_client.play(source, after=tocar_proxima)
                         await ctx.send(f"🎵 Tocando agora: **{title}**")
                     else:
