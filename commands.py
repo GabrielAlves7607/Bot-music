@@ -132,6 +132,7 @@ def setup_commands(bot):
         if ctx.voice_client:
             await ctx.voice_client.disconnect()
             await ctx.send("Música parada e bot desconectado! ⏹️")
+            listamsc.clear()
         else:
             await ctx.send("Eu não estou tocando nada no momento.")
 
