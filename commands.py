@@ -9,13 +9,26 @@ import gc
 listamsc = []
 
 # Configurações do yt-dlp e FFmpeg
-YDL_OPTIONS = {
+# 1. Usada para ler playlists na velocidade da luz (pega só os dados rasos)
+# Opção RÁPIDA: Apenas para listar os nomes das músicas da playlist
+YDL_OPTIONS_RAPIDA = {
     'format': 'bestaudio/best',
-    'noplaylist': 'True',
+    'noplaylist': False,
+    'extract_flat': 'in_playlist', # AQUI está o segredo da velocidade
     'quiet': True,
+    'ignoreerrors': True,
     'no_warnings': True,
     'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
 }
+
+# Opção COMPLETA: Usada apenas no momento que a música vai começar a tocar
+YDL_OPTIONS_TOCAR = {
+    'format': 'bestaudio/best',
+    'noplaylist': True,
+    'quiet': True,
+    'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+}
+
 FFMPEG_OPTIONS = {
     # Antes de abrir o link: focado em estabilidade e velocidade de conexão
     'before_options': (
@@ -38,52 +51,72 @@ FFMPEG_OPTIONS = {
 def setup_commands(bot):
     @bot.command(name="play")
     async def play(ctx, *, search: str):
-        def tocar_proxima(error):
-            if len(listamsc) > 0:
-                # 1. Pega os dados da próxima música
-                proxima_musica = listamsc.pop(0) 
-                proxima_url = proxima_musica['url']
-                
-                # 2. Cria o source
-                source = discord.FFmpegOpusAudio(proxima_url, **FFMPEG_OPTIONS)
-                
-                # 3. Toca a próxima
-                ctx.voice_client.play(source, after=tocar_proxima)
-                gc.collect() # Limpa resíduos da música anterior da RAM
+        loop = asyncio.get_running_loop()
 
-        """Toca uma música baseada no link ou termo de busca."""
+        # Esta função é o "motor" que busca o áudio pesado da próxima música
+        async def carregar_e_tocar():
+            if len(listamsc) > 0:
+                try:
+                    # Pega a próxima música da fila (que só tem título e link básico)
+                    proxima = listamsc.pop(0)
+                    
+                    # Agora sim, usamos o yt-dlp para pegar o link de áudio real dessa música
+                    with yt_dlp.YoutubeDL(YDL_OPTIONS_TOCAR) as ydl:
+                        info = await loop.run_in_executor(None, lambda: ydl.extract_info(proxima['url'], download=False))
+                        audio_url = info['url']
+
+                    source = discord.FFmpegOpusAudio(audio_url, **FFMPEG_OPTIONS)
+                    ctx.voice_client.play(source, after=lambda e: bot.loop.create_task(carregar_e_tocar()))
+                    
+                    if not getattr(ctx.voice_client, '_avisado', False):
+                         await ctx.send(f"🎶 Tocando agora: **{proxima['title']}**")
+                    
+                    gc.collect()
+                except Exception as e:
+                    print(f"Erro ao tocar: {e}")
+                    bot.loop.create_task(carregar_e_tocar()) # Pula para a próxima se essa falhar
+
+        # --- Lógica do Comando ---
         if not ctx.author.voice:
             return await ctx.send("Você precisa estar em um canal de voz!")
-
         if not ctx.voice_client:
             await ctx.author.voice.channel.connect()
 
         async with ctx.typing():
-            with yt_dlp.YoutubeDL(YDL_OPTIONS) as ydl:
+            with yt_dlp.YoutubeDL(YDL_OPTIONS_RAPIDA) as ydl:
                 try:
-                    # Busca a música
-                    resultados = ydl.extract_info(f"ytsearch:{search}", download=False)
+                    busca = search if search.startswith("http") else f"ytsearch:{search}"
+                    # Extração rápida (extract_flat)
+                    resultados = await loop.run_in_executor(None, lambda: ydl.extract_info(busca, download=False))
                     
-                    # VERIFICAÇÃO: Se não houver entradas, avisa o usuário e para aqui
                     if 'entries' not in resultados or not resultados['entries']:
-                        return await ctx.send(f"❌ Não encontrei nenhum resultado para: `{search}`")
+                        return await ctx.send("❌ Não encontrei resultados.")
 
-                    info = resultados['entries'][0]
-                    url = info['url']
-                    title = info['title']
+                    # Se for playlist, processa rápido os títulos
+                    entradas = resultados['entries'] if 'entries' in resultados else [resultados]
                     
-                    if not ctx.voice_client.is_playing():
-                        source = discord.FFmpegOpusAudio(url, **FFMPEG_OPTIONS)
-                        ctx.voice_client.play(source, after=tocar_proxima)
-                        await ctx.send(f"🎵 Tocando agora: **{title}**")
+                    if len(entradas) > 1:
+                        for video in entradas:
+                            if video:
+                                listamsc.append({'title': video.get('title', 'Sem título'), 'url': video.get('url') or f"https://www.youtube.com/watch?v={video.get('id')}"})
+                        await ctx.send(f"📚 Adicionadas **{len(entradas)}** músicas da playlist!")
+                        await ctx.send(f"🎶 Tocando agora: **{listamsc[0]['title']}!**") #anucia a primeira musica
                     else:
-                        # Salvamos o título e a URL
-                        listamsc.append({'title': title, 'url': url})
-                        await ctx.send(f"🎵 Adicionada à fila: **{title}** (Posição: {len(listamsc)})")
+                        # Música única
+                        video = entradas[0]
+                        listamsc.append({'title': video['title'], 'url': video['url']})
+                        if ctx.voice_client.is_playing():
+                            await ctx.send(f"✅ **{video['title']}** adicionada à fila!")
+
+                    # Se o bot estiver em silêncio, começa a tocar a primeira imediatamente
+                    if not ctx.voice_client.is_playing():
+                        ctx.voice_client._avisado = True # Evita duplicar mensagem
+                        await carregar_e_tocar()
+                        ctx.voice_client._avisado = False
 
                 except Exception as e:
-                    await ctx.send(f"Erro ao tentar processar a música: {e}")
-
+                    await ctx.send(f"Erro no processamento: {e}")
+                    
     @bot.command(name="skip")
     async def skip(ctx):
         """Pular musicas"""
