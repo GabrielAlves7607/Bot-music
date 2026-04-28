@@ -5,8 +5,11 @@ import asyncio
 import psutil
 import os
 import gc
+import random
 
 listamsc = []
+# 'off' = sem loop, 'current' = repete a música atual, 'queue' = repete a fila inteira
+loop_status = "off"
 
 # Configurações do yt-dlp e FFmpeg
 # 1. Usada para ler playlists na velocidade da luz (pega só os dados rasos)
@@ -56,6 +59,23 @@ class ControleMusica(discord.ui.View):
     def __init__(self, bot):
         super().__init__(timeout=None)
         self.bot = bot
+        
+        # --- CORREÇÃO VISUAL: Sincroniza o botão com o estado global ---
+        global loop_status
+        for item in self.children:
+            if isinstance(item, discord.ui.Button) and "Loop" in (item.label or ""):
+                if loop_status == "current":
+                    item.style = discord.ButtonStyle.green
+                    item.label = "Loop: Música"
+                    item.emoji = "🔂"
+                elif loop_status == "queue":
+                    item.style = discord.ButtonStyle.blurple
+                    item.label = "Loop: Fila"
+                    item.emoji = "🔁"
+                else:
+                    item.style = discord.ButtonStyle.gray
+                    item.label = "Loop: Off"
+                    item.emoji = "🔁"
 
     @discord.ui.button(label="Pausar/Retomar", style=discord.ButtonStyle.blurple, emoji="⏯️")
     async def play_pause(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -81,6 +101,37 @@ class ControleMusica(discord.ui.View):
         else:
             await interaction.response.send_message("Fila vazia ou nada tocando.", ephemeral=True)
 
+    @discord.ui.button(label="Loop: Off", style=discord.ButtonStyle.gray, emoji="🔁")
+    async def loop_toggle(self, interaction: discord.Interaction, button: discord.ui.Button):
+        vc = interaction.guild.voice_client
+        global loop_status
+
+        if not vc:
+            return await interaction.response.send_message("Não estou num canal de voz.", ephemeral=True)
+
+        # Ciclo de estados: off -> current -> queue -> off
+        if loop_status == "off":
+            loop_status = "current"
+            button.style = discord.ButtonStyle.green
+            button.label = "Loop: Música"
+            button.emoji = "🔂"
+            texto = "🔂 Loop: **Música Atual** ativado!"
+        elif loop_status == "current":
+            loop_status = "queue"
+            button.style = discord.ButtonStyle.blurple
+            button.label = "Loop: Fila"
+            button.emoji = "🔁"
+            texto = "🔁 Loop: **Fila Inteira** ativado!"
+        else:
+            loop_status = "off"
+            button.style = discord.ButtonStyle.gray
+            button.label = "Loop: Off"
+            button.emoji = "🔁"
+            texto = "❌ Loop desativado!"
+
+        await interaction.response.edit_message(view=self)
+        await interaction.followup.send(content=texto, ephemeral=True)
+
     @discord.ui.button(label="Parar", style=discord.ButtonStyle.red, emoji="⏹️")
     async def stop(self, interaction: discord.Interaction, button: discord.ui.Button):
         vc = interaction.guild.voice_client
@@ -97,25 +148,42 @@ def setup_commands(bot):
         loop = asyncio.get_running_loop()
 
         async def carregar_e_tocar():
-            if len(listamsc) > 0:
+            global loop_status
+            
+            # 1. RECICLAGEM: Se havia uma música tocando e o modo é Fila, 
+            # colocamos ela de volta no fim ANTES de pegar a próxima.
+            if loop_status == "queue" and hasattr(ctx.voice_client, 'musica_atual'):
+                listamsc.append(ctx.voice_client.musica_atual)
+            
+            if len(listamsc) > 0 or (loop_status == "current" and hasattr(ctx.voice_client, 'musica_atual')):
                 try:
-                    proxima = listamsc.pop(0)
-                    
+                    if loop_status == "current" and hasattr(ctx.voice_client, 'musica_atual'):
+                        proxima = ctx.voice_client.musica_atual
+                    else:
+                        if len(listamsc) == 0: return
+                        proxima = listamsc.pop(0)
+                        ctx.voice_client.musica_atual = proxima # Salva a nova atual
+
+                    # --- Extração e Playback ---
                     with yt_dlp.YoutubeDL(YDL_OPTIONS_TOCAR) as ydl:
                         info = await loop.run_in_executor(None, lambda: ydl.extract_info(proxima['url'], download=False))
                         audio_url = info['url']
 
                     source = discord.FFmpegOpusAudio(audio_url, **FFMPEG_OPTIONS)
+                    
+                    # Agora a view já nasce com as cores certas por causa do __init__ corrigido
                     view = ControleMusica(bot)
                     
                     ctx.voice_client.play(source, after=lambda e: ctx.bot.loop.create_task(carregar_e_tocar()))
                     
-                    # Anuncia a música com os botões
-                    await ctx.send(f"🎶 Tocando agora: **{proxima['title']}**", view=view)
+                    if loop_status != "current" or not getattr(ctx.voice_client, '_anunciado', False):
+                        await ctx.send(f"🎶 Tocando agora: **{proxima['title']}**", view=view)
+                        ctx.voice_client._anunciado = True if loop_status == "current" else False
                     
                     gc.collect()
                 except Exception as e:
-                    print(f"Erro ao tocar: {e}")
+                    print(f"Erro: {e}")
+                    await asyncio.sleep(2)
                     ctx.bot.loop.create_task(carregar_e_tocar())
 
         if not ctx.author.voice:
@@ -197,6 +265,34 @@ def setup_commands(bot):
         embed.add_field(name="Carga", value=barra, inline=False)
         await ctx.send(embed=embed)
 
+    @bot.command(name="randomizar")
+    async def shuffle_cmd(ctx):
+        """Embaralha a fila atual."""
+        global listamsc
+        if len(listamsc) < 2:
+            return await ctx.send("Fila muito curta para embaralhar! 🤏")
+
+        random.shuffle(listamsc)
+        await ctx.send("🔀 Fila embaralhada com sucesso!")
+
+    @bot.command(name="loop")
+    async def loop_cmd(ctx):
+        """Alterna entre os modos de repetição."""
+        global loop_status
+        if loop_status == "off":
+            loop_status = "current"
+            await ctx.send("🔂 Loop: **Música Atual** ativado!")
+        elif loop_status == "current":
+            loop_status = "off"
+            await ctx.send("❌ Loop desativado!")
+
+    @bot.command(name="limpar")
+    async def clean_cmd(ctx):
+        """Limpa toda a fila de espera."""
+        global listamsc
+        listamsc.clear()
+        await ctx.send("🧹 Fila limpa!")
+
     @bot.command(name="help")
     async def help_command(ctx):
         """Exibe a lista de comandos de forma elegante."""
@@ -238,6 +334,21 @@ def setup_commands(bot):
         embed.add_field(
             name="⏹️ `!stop`",
             value="Para a música e desconecta o bot.",
+            inline=False
+        )
+        embed.add_field(
+            name="🧹 `!limpar`",
+            value="Limpa a fila de músicas!",
+            inline=False
+        )
+        embed.add_field(
+            name="🔀 `!randomizar`",
+            value="Randomiza a lista de música.",
+            inline=False
+        )
+        embed.add_field(
+            name="🔂 `!loop`",
+            value="Toca novamente a musica/playlist!.",
             inline=False
         )
 
