@@ -26,6 +26,8 @@ YDL_OPTIONS_TOCAR = {
     'format': 'bestaudio/best',
     'noplaylist': True,
     'quiet': True,
+    'javascript_runtimes': ['node', 'deno'],
+    'remote_components': ['ejs:github'],
     'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
 }
 
@@ -48,37 +50,77 @@ FFMPEG_OPTIONS = {
     )
 }
 
+# ... (suas configurações de YDL e FFMPEG continuam as mesmas) ...
+
+class ControleMusica(discord.ui.View):
+    def __init__(self, bot):
+        super().__init__(timeout=None)
+        self.bot = bot
+
+    @discord.ui.button(label="Pausar/Retomar", style=discord.ButtonStyle.blurple, emoji="⏯️")
+    async def play_pause(self, interaction: discord.Interaction, button: discord.ui.Button):
+        vc = interaction.guild.voice_client
+        if not vc:
+            return await interaction.response.send_message("Não estou em um canal de voz.", ephemeral=True)
+
+        if vc.is_playing():
+            vc.pause()
+            await interaction.response.send_message("⏸️ Música pausada!", ephemeral=True)
+        elif vc.is_paused():
+            vc.resume()
+            await interaction.response.send_message("▶️ Música retomada!", ephemeral=True)
+        else:
+            await interaction.response.send_message("Não há nada tocando.", ephemeral=True)
+
+    @discord.ui.button(label="Pular", style=discord.ButtonStyle.gray, emoji="⏭️")
+    async def skip(self, interaction: discord.Interaction, button: discord.ui.Button):
+        vc = interaction.guild.voice_client
+        if vc and (vc.is_playing() or vc.is_paused()):
+            vc.stop()
+            await interaction.response.send_message("⏭️ Música pulada!", ephemeral=True)
+        else:
+            await interaction.response.send_message("Fila vazia ou nada tocando.", ephemeral=True)
+
+    @discord.ui.button(label="Parar", style=discord.ButtonStyle.red, emoji="⏹️")
+    async def stop(self, interaction: discord.Interaction, button: discord.ui.Button):
+        vc = interaction.guild.voice_client
+        if vc:
+            global listamsc
+            listamsc.clear()
+            await vc.disconnect()
+            await interaction.response.send_message("⏹️ Bot desconectado e fila limpa.", ephemeral=True)
+
+# --- COMANDOS ---
 def setup_commands(bot):
     @bot.command(name="play")
     async def play(ctx, *, search: str):
         loop = asyncio.get_running_loop()
 
-        # Esta função é o "motor" que busca o áudio pesado da próxima música
         async def carregar_e_tocar():
             if len(listamsc) > 0:
                 try:
-                    # Pega a próxima música da fila (que só tem título e link básico)
                     proxima = listamsc.pop(0)
                     
-                    # Agora sim, usamos o yt-dlp para pegar o link de áudio real dessa música
                     with yt_dlp.YoutubeDL(YDL_OPTIONS_TOCAR) as ydl:
                         info = await loop.run_in_executor(None, lambda: ydl.extract_info(proxima['url'], download=False))
                         audio_url = info['url']
 
                     source = discord.FFmpegOpusAudio(audio_url, **FFMPEG_OPTIONS)
-                    ctx.voice_client.play(source, after=lambda e: bot.loop.create_task(carregar_e_tocar()))
+                    view = ControleMusica(bot)
                     
-                    if not getattr(ctx.voice_client, '_avisado', False):
-                         await ctx.send(f"🎶 Tocando agora: **{proxima['title']}**")
+                    ctx.voice_client.play(source, after=lambda e: ctx.bot.loop.create_task(carregar_e_tocar()))
+                    
+                    # Anuncia a música com os botões
+                    await ctx.send(f"🎶 Tocando agora: **{proxima['title']}**", view=view)
                     
                     gc.collect()
                 except Exception as e:
                     print(f"Erro ao tocar: {e}")
-                    bot.loop.create_task(carregar_e_tocar()) # Pula para a próxima se essa falhar
+                    ctx.bot.loop.create_task(carregar_e_tocar())
 
-        # --- Lógica do Comando ---
         if not ctx.author.voice:
             return await ctx.send("Você precisa estar em um canal de voz!")
+        
         if not ctx.voice_client:
             await ctx.author.voice.channel.connect()
 
@@ -86,115 +128,73 @@ def setup_commands(bot):
             with yt_dlp.YoutubeDL(YDL_OPTIONS_RAPIDA) as ydl:
                 try:
                     busca = search if search.startswith("http") else f"ytsearch:{search}"
-                    # Extração rápida (extract_flat)
                     resultados = await loop.run_in_executor(None, lambda: ydl.extract_info(busca, download=False))
                     
                     if 'entries' not in resultados or not resultados['entries']:
                         return await ctx.send("❌ Não encontrei resultados.")
 
-                    # Se for playlist, processa rápido os títulos
                     entradas = resultados['entries'] if 'entries' in resultados else [resultados]
                     
                     if len(entradas) > 1:
                         for video in entradas:
                             if video:
-                                listamsc.append({'title': video.get('title', 'Sem título'), 'url': video.get('url') or f"https://www.youtube.com/watch?v={video.get('id')}"})
-                        await ctx.send(f"📚 Adicionadas **{len(entradas)}** músicas da playlist!")
-                        await ctx.send(f"🎶 Tocando agora: **{listamsc[0]['title']}!**") #anucia a primeira musica
+                                listamsc.append({
+                                    'title': video.get('title', 'Sem título'), 
+                                    'url': video.get('url') or f"https://www.youtube.com/watch?v={video.get('id')}"
+                                })
+                        await ctx.send(f"📚 Adicionadas **{len(entradas)}** músicas!")
                     else:
-                        # Música única
                         video = entradas[0]
                         listamsc.append({'title': video['title'], 'url': video['url']})
                         if ctx.voice_client.is_playing():
                             await ctx.send(f"✅ **{video['title']}** adicionada à fila!")
 
-                    # Se o bot estiver em silêncio, começa a tocar a primeira imediatamente
-                    if not ctx.voice_client.is_playing():
-                        ctx.voice_client._avisado = True # Evita duplicar mensagem
+                    # Inicia a reprodução se o bot estiver parado
+                    if not ctx.voice_client.is_playing() and not ctx.voice_client.is_paused():
                         await carregar_e_tocar()
-                        ctx.voice_client._avisado = False
 
                 except Exception as e:
                     await ctx.send(f"Erro no processamento: {e}")
-                    
+
+    # --- COMANDOS AUXILIARES ---
     @bot.command(name="skip")
-    async def skip(ctx):
-        """Pular musicas"""
-        if ctx.voice_client.is_playing() and ctx.voice_client:
+    async def skip_cmd(ctx):
+        if ctx.voice_client and (ctx.voice_client.is_playing() or ctx.voice_client.is_paused()):
             ctx.voice_client.stop()
-            await ctx.send("Musica pulada! ⏭️ ")
+            await ctx.send("Musica pulada! ⏭️")
         else:
             await ctx.send("Não há nada tocando no momento.")
 
     @bot.command(name="stop")
-    async def stop(ctx):
-        """Para a música e desconecta."""
+    async def stop_cmd(ctx):
         if ctx.voice_client:
+            listamsc.clear()
             await ctx.voice_client.disconnect()
             await ctx.send("Música parada e bot desconectado! ⏹️")
-            listamsc.clear()
         else:
-            await ctx.send("Eu não estou tocando nada no momento.")
-
-    @bot.command(name="pause")
-    async def pause(ctx):
-        """Pausa a música atual."""
-        if ctx.voice_client and ctx.voice_client.is_playing():
-            ctx.voice_client.pause()
-            await ctx.send("Música pausada! ⏸️")
-
-    @bot.command(name="resume")
-    async def resume(ctx):
-        """Retoma a música pausada."""
-        if ctx.voice_client and ctx.voice_client.is_paused():
-            ctx.voice_client.resume()
-            await ctx.send("Música retomada! ▶️")
+            await ctx.send("Eu não estou em um canal de voz.")
 
     @bot.command(name="fila")
     async def fila(ctx):
-        """Lista as músicas na fila."""
-        if len(listamsc) == 0:
+        if not listamsc:
             return await ctx.send("A fila está vazia no momento! 📭")
 
-        embed = discord.Embed(
-            title="📜 Fila de Músicas",
-            description=f"Existem **{len(listamsc)}** músicas na fila.",
-            color=discord.Color.green()
-        )
-
-        lista_texto = ""
-        for i, musica in enumerate(listamsc[:10], 1):
-            lista_texto += f"**{i}.** {musica['title']}\n"
-
+        embed = discord.Embed(title="📜 Fila de Músicas", color=discord.Color.green())
+        lista_texto = "\n".join([f"**{i+1}.** {m['title']}" for i, m in enumerate(listamsc[:10])])
         if len(listamsc) > 10:
-            lista_texto += f"\n*E mais {len(listamsc) - 10} músicas...*"
-
-        embed.add_field(name="Próximas músicas:", value=lista_texto, inline=False)
+            lista_texto += f"\n\n*E mais {len(listamsc)-10} músicas...*"
+        
+        embed.description = lista_texto
         await ctx.send(embed=embed)
 
     @bot.command(name="status")
     async def status(ctx):
-        """Mostra o uso atual de RAM do bot."""
         process = psutil.Process(os.getpid())
-        memoria_mb = process.memory_info().rss / 1024 / 1024
-        
-        embed = discord.Embed(
-            title="📊 Status do Sistema",
-            color=discord.Color.gold()
-        )
-        embed.add_field(
-            name="Uso de Memória RAM",
-            value=f"`{memoria_mb:.2f} MB` / 100 MB",
-            inline=False
-        )
-        
-        # Barra visual simples
-        barra_cheia = min(int((memoria_mb / 100) * 10), 10)
-        barra_vazia = 10 - barra_cheia
-        grafico = "🟦" * barra_cheia + "⬜" * barra_vazia
-        
-        embed.add_field(name="Carga", value=grafico, inline=False)
-        
+        mem = process.memory_info().rss / 1024 / 1024
+        embed = discord.Embed(title="📊 Status do Sistema", color=discord.Color.gold())
+        embed.add_field(name="RAM", value=f"`{mem:.2f} MB` / 100 MB", inline=False)
+        barra = "🟦" * int(mem/10) + "⬜" * (10 - int(mem/10))
+        embed.add_field(name="Carga", value=barra, inline=False)
         await ctx.send(embed=embed)
 
     @bot.command(name="help")
