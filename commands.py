@@ -28,6 +28,9 @@ YDL_OPTIONS_TOCAR = {
     'noplaylist': True,
     'quiet': True,
     'cachedir': False,
+    'javascript_runtimes': ['node', 'deno'], # O bot vai procurar por estes
+    'remote_components': ['ejs:github'],
+    'allow_untrusted': True,                 # <-- ADICIONE ESTA LINHA
     'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
 }
 
@@ -38,10 +41,10 @@ FFMPEG_OPTIONS = {
     ),
     'options': (
         '-vn -loglevel panic '
-        '-b:a 128k '                 # Bitrate reduzido para economizar RAM
-        '-ar 48000 '                # Sample rate reduzido para estabilidade
+        '-b:a 128k '                
+        '-ar 48000 '                
         '-ac 2 '                    
-        '-threads 1 '               # FORÇA apenas 1 thread (Essencial para 100MB)
+        '-threads 0 '               
         '-analyzeduration 0 '       
         '-probesize 32 '            
         '-af "volume=1.0"'          
